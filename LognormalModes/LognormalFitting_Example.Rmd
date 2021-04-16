@@ -1,0 +1,226 @@
+---
+title: "Lognormal Mode Fitting"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+---
+Below is an implementation of the lognormal fitting functions contained in LognormalFit.R. For access to the functions in LognormalFit use source("LognormalFit.R"), assuming that the R script is in the current working directory. For the examples below I have imported a .csv output from AIM from a Suthern Ocean voyage, I have sent this through with the R scripts.
+
+The LognormalFit:FitLognormal function fits up to 5 lognormal distributions of the following form:  
+
+$$dN/dlogDp = \frac{N}{log_{10}(\sigma_g)\sqrt{2\pi}} \exp(-\frac{(log_{10}(D_p) - log_{10}(\mu))^2}{2log_{10}(\sigma_g)^2}) $$
+
+Where $N$ is the number concentration for the lognormal mode in $cm^{-3}$, $\mu$ is the geometric mean diameter in $nm$ and $\sigma_g$ is the geometric standard deviation.
+
+The FitLognormal function uses non-linear least square fits to the data (nlsLM). This tries to minimise the least square error by adjusting the number concentration, the geometric standard deviation and the geometric mean of the lognormal modes.
+
+ FitLognormal takes the following variables:  
+      * sd is an array of the measured dNdlogDp data, date is a vector dates corresponding to each sample, Dp is a vector of measurd diameters and TotConc is a vector of total concentration. sd has dimensions no. of samples x no. of diameters  
+      * date has length = no. of samples  
+      * Dp has length = no. of diameters  
+      * TotConc has length = no. of diameters  
+      * nmodes is an integer indicating the number of lognormal modes to fit to the distribution  
+      * upper and lower are named data.frames with variables p, sd and mn, corresponding with upper/lower constraints for these variables for each lognormal mode.  
+            + p is the number fraction of the lognormal distributions i.e. lognormal distributions/total conc.  
+            + sd is the geometric std dev  
+            + mn is the geo mean diameter in nm  
+            + the number of rows of upper and lower correspond to the number of modes.  
+      
+  Up to 5 lognormal distributions are fitted. The function applies a randon set of initial conditions (constrained by the upper an lower limits for each parameters) and performs 1000 fits to each size distribution. The error in each of these fits is computed via the Bayesian Information Criterion (BIC), and the fit with the lowest error is taken.  
+  FitSSA - is used to fit marine distributions - as in Modini et al. 2015, but is not used here.  
+  FitLS runs the non-linear least square fitting and in turn calls nlsParam - which provides the fitting formula and parameters.  
+  
+
+```{r ReadData}
+##Load some packages
+library(ggplot2)
+library(reshape2)
+##Load lognormal fitting functions from R script ( in the same directory)
+source(file = "LognormalFit.R", chdir = TRUE)
+##Load up some dummy sd data (exported from AIM) - just loading three random rows (1,50,100)
+dat <- read.table(file = "SDtest.csv", sep = ",", header = T)[c(1,50,100),]
+##Get date into R format
+dat$date <- as.POSIXct(dat$date, format = "%Y-%m-%d %H:%M:%S", tz = "UTC")
+##Create variables needed for input to lognormal fitting code
+col_ind <- grep("X[0-9]+.[0-9]+$", names(dat))
+date <- dat$date
+sd <- dat[,col_ind]
+Dp <- as.numeric(substring(names(dat)[col_ind], first = 2))
+TotConc <- dat$Total.Conc..cm.
+```
+
+The code is flexible in the number of modes that get fitted and the constraints on each longormal mode.
+
+```{r single mode}
+##Set the remaining fitting parameters
+nmodes = 1
+upper = data.frame(p = 1, s = 3, mu = 1000)
+lower = data.frame(p = 0, s = 1, mu = 10)
+##Run fits
+single.sd <- FitLognormal(date = date, sd = sd, Dp = Dp, TotConc = TotConc, nmodes = nmodes, upper = upper, lower = lower)
+print(single.sd[,c(17,16,14,4,3,2,8)])
+```
+
+Above are some of the variables that the fitting code returns, in this case for the three example measured distributions.
+
+FitLognnormal returns a data.frame with 16 variables. The most important (as shown above) are:  
+* The sample number (sample)  
+* The sample date (date)  
+* The number of modes fitted (nmodes)  
+* The lognormal mode relevant for that row (mode)  
+* The Number concentration of the lognormal mode (N)  
+* The geometric standard deviation for the mode (sd)  
+* The mean diameter in nm for the lognormal mode (mn)  
+* The bayesian information criterion value for the lognormal fit - all modes (BIC)  
+
+Other variables returned are the relative number concentration of each mode at 50, 100 and 150 nm (mix50nm, mix100nm and mix150nm), further error parameters (AIC, Err, Err_max), a name variable and a flag variable for error reporting.  
+
+Looking at the table above the number concentrations look reasonable (290 - 380 cm-3), as do the mean diameters (40 - 85 nm), howver the standard deviations are all sitting at the upper limit of 3. This is an indication that more lognormal modes are required for this data. Just as a note the dummy data I used was from remote marine measurements - so we would expect more than one lognormal mode. 
+
+Now to plot up the fits we have to rearrange our data into a format friendly for plotting. I use melt to create a long version of the measured and fitted data frames, which can then be plotted using ggplot functions.  
+
+```{r PlotFits}
+##Create plotting data.frame
+pl.measured <- melt(data.frame(date = date, sd), id.vars = "date")
+names(pl.measured)[grep("value", names(pl.measured))] <- "dNdlogDp"
+pl.measured$Dp <- rep(Dp, each = 3)
+##Creating data.frame to compute the lognormal fits
+fitted <- data.frame(date = pl.measured$date, Dp = pl.measured$Dp)
+##Get an index for the parameters (from single.sd) in fitted
+ln_ind <- match(fitted$date, single.sd$date[which(single.sd$mode == 1)])
+fitted$N1 <- single.sd$N[ln_ind]
+fitted$sd1 <- single.sd$sd[ln_ind] 
+fitted$mn1 <- single.sd$mn[ln_ind]
+##Compute the lognormal distribution
+fitted$Mode.1 <- (fitted$N1/(log10(fitted$sd1)*sqrt(2*pi)))*exp(-((log10(fitted$Dp)-log10(fitted$mn1))^2)/(2*log10(fitted$sd1)^2))
+##Melt fitted to get plotting data.frame
+pl.fit <- melt(fitted, id.vars=c("date", "Dp", "N1", "sd1", "mn1"))
+names(pl.fit)[grep("value", names(pl.fit))] <- "dNdlogDp"
+names(pl.fit)[grep("variable", names(pl.fit))] <- "Mode"
+```
+
+Plot up the data
+
+```{r Plot single mode}
+  ggplot(pl.measured, aes(x = Dp, y = dNdlogDp))+
+    geom_point(col = "grey", alpha = 0.4)+
+    geom_line(data = pl.fit, aes(x = Dp, y = dNdlogDp, col = Mode))+
+    facet_wrap(~date, ncol = 1)+
+    labs(x = expression("Dp [nm]"), y = expression(dN/dlogD["p"]*~"["*cm^-3*"]"))+
+    scale_x_log10(limits = c(10, 1000), minor_breaks = c(seq(10, 99, by = 10), seq(100, 1000, by = 100)))+
+    #scale_color_manual(values = cols)+
+    theme_bw()
+```
+
+The graph for the sinlge lognormal mode confirms that more than one lognormal mode is required to fit to all of the samples.
+
+Repeat above but fit 2 lognormal modes
+
+```{r bimodal}
+##Set fitting parameters
+nmodes = 2
+upper = data.frame(p = c(1, 1), s = c(3,3), mu = c(1000, 1000))
+lower = data.frame(p = c(0, 0), s = c(1,1), mu = c(10, 10))
+##Run fits
+bimodal.sd <- FitLognormal(date, sd,Dp, TotConc, nmodes, upper, lower)
+print(bimodal.sd[,c(17,16,14,4,3,2,8)])
+
+##Creating data.frame to compute the lognormal fits
+fitted <- data.frame(date = pl.measured$date, Dp = pl.measured$Dp)
+##Get an index for the parameters (from bimodal.sd) in fitted
+ln1_ind <- match(paste(fitted$date, "1"), paste(bimodal.sd$date, bimodal.sd$mode))
+ln2_ind <- match(paste(fitted$date, "2"), paste(bimodal.sd$date, bimodal.sd$mode))
+fitted$N1 <- bimodal.sd$N[ln1_ind]; fitted$N2 <- bimodal.sd$N[ln2_ind]
+fitted$sd1 <- bimodal.sd$sd[ln1_ind]; fitted$sd2 <- bimodal.sd$sd[ln2_ind]
+fitted$mn1 <- bimodal.sd$mn[ln1_ind]; fitted$mn2 <- bimodal.sd$mn[ln2_ind];
+##Compute the lognormal distribution
+fitted$Mode.1 <- (fitted$N1/(log10(fitted$sd1)*sqrt(2*pi)))*exp(-((log10(fitted$Dp)-log10(fitted$mn1))^2)/(2*log10(fitted$sd1)^2))
+fitted$Mode.2 <- (fitted$N2/(log10(fitted$sd2)*sqrt(2*pi)))*exp(-((log10(fitted$Dp)-log10(fitted$mn2))^2)/(2*log10(fitted$sd2)^2))
+fitted$Total <- fitted$Mode.1 + fitted$Mode.2
+##Melt fitted to get plotting data.frame
+pl.fit <- melt(fitted, id.vars=c("date", "Dp", "N1", "sd1", "mn1", "N2", "sd2", "mn2"))
+names(pl.fit)[grep("value", names(pl.fit))] <- "dNdlogDp"
+names(pl.fit)[grep("variable", names(pl.fit))] <- "Mode"
+##Plot up bimodal fits
+  ggplot(pl.measured, aes(x = Dp, y = dNdlogDp))+
+    geom_point(col = "grey", alpha = 0.4)+
+    geom_line(data = pl.fit, aes(x = Dp, y = dNdlogDp, col = Mode))+
+    facet_wrap(~date, ncol = 1)+
+    labs(x = expression("Dp [nm]"), y = expression(dN/dlogD["p"]*~"["*cm^-3*"]"))+
+    scale_x_log10(limits = c(10, 1000), minor_breaks = c(seq(10, 99, by = 10), seq(100, 1000, by = 100)))+
+    #scale_color_manual(values = cols)+
+    theme_bw()
+```
+
+Two lognnormal modes looks better (the standard deviations are no longer all 3), but the mode with the largest diameter is still very broad.
+
+Repeat again, but for 3 modes
+```{r}
+##Set fitting parameters
+nmodes = 3
+upper = data.frame(p = c(1, 1, 1), s = c(3,3,3), mu = c(1000, 1000, 1000))
+lower = data.frame(p = c(0, 0, 0), s = c(1,1,1), mu = c(10, 10, 10))
+##Run fits
+trimodal.sd <- FitLognormal(date, sd,Dp, TotConc, nmodes, upper, lower)
+print(trimodal.sd[,c(17,16,14,4,3,2,8)])
+##Creating data.frame to compute the lognormal fits
+fitted <- data.frame(date = pl.measured$date, Dp = pl.measured$Dp)
+##Get an index for the parameters (from trimodal.sd) in fitted
+ln1_ind <- match(paste(fitted$date, "1"), paste(trimodal.sd$date, trimodal.sd$mode))
+ln2_ind <- match(paste(fitted$date, "2"), paste(trimodal.sd$date, trimodal.sd$mode))
+ln3_ind <- match(paste(fitted$date, "3"), paste(trimodal.sd$date, trimodal.sd$mode))
+fitted$N1 <- trimodal.sd$N[ln1_ind]; fitted$N2 <- trimodal.sd$N[ln2_ind]; fitted$N3 <- trimodal.sd$N[ln3_ind]
+fitted$sd1 <- trimodal.sd$sd[ln1_ind]; fitted$sd2 <- trimodal.sd$sd[ln2_ind]; fitted$sd3 <- trimodal.sd$sd[ln3_ind]
+fitted$mn1 <- trimodal.sd$mn[ln1_ind]; fitted$mn2 <- trimodal.sd$mn[ln2_ind]; fitted$mn3 <- trimodal.sd$mn[ln3_ind]
+##Compute the lognormal distribution
+fitted$Mode.1 <- (fitted$N1/(log10(fitted$sd1)*sqrt(2*pi)))*exp(-((log10(fitted$Dp)-log10(fitted$mn1))^2)/(2*log10(fitted$sd1)^2))
+fitted$Mode.2 <- (fitted$N2/(log10(fitted$sd2)*sqrt(2*pi)))*exp(-((log10(fitted$Dp)-log10(fitted$mn2))^2)/(2*log10(fitted$sd2)^2))
+fitted$Mode.3 <- (fitted$N3/(log10(fitted$sd3)*sqrt(2*pi)))*exp(-((log10(fitted$Dp)-log10(fitted$mn3))^2)/(2*log10(fitted$sd3)^2))
+fitted$Total <- fitted$Mode.1 + fitted$Mode.2 + fitted$Mode.3
+##Melt fitted to get plotting data.frame
+pl.fit <- melt(fitted, id.vars=c("date", "Dp", "N1", "sd1", "mn1", "N2", "sd2", "mn2", "N3", "sd3", "mn3"))
+names(pl.fit)[grep("value", names(pl.fit))] <- "dNdlogDp"
+names(pl.fit)[grep("variable", names(pl.fit))] <- "Mode"
+##Plot up trimodal fits
+  ggplot(pl.measured, aes(x = Dp, y = dNdlogDp))+
+    geom_point(col = "grey", alpha = 0.4)+
+    geom_line(data = pl.fit, aes(x = Dp, y = dNdlogDp, col = Mode))+
+    facet_wrap(~date, ncol = 1)+
+    labs(x = expression("Dp [nm]"), y = expression(dN/dlogD["p"]*~"["*cm^-3*"]"))+
+    scale_x_log10(limits = c(10, 1000), minor_breaks = c(seq(10, 99, by = 10), seq(100, 1000, by = 100)))+
+    #scale_color_manual(values = cols)+
+    theme_bw()
+
+```
+
+Note the geometric standard deviations in the tables above - they are no longer at the maximum, 3.  
+This is pretty close to what we would expect from a marine size distribution, with an Aitken, accumulation and coarse mode.
+It is worth noting that you can constrain any of these modes using the upper and lower values for N, sd and mn.
+
+Now I am quickly going to compare the error for all of the fits (1-5 lognormal modes). I have to compute 4 and 5 lognormal mode cases. 
+```{r Compare Error}
+##Set fitting parameters - 4 modes
+nmodes = 4
+upper = data.frame(p = c(1, 1, 1, 1), s = c(3,3,3,3), mu = c(1000, 1000, 1000, 1000))
+lower = data.frame(p = c(0, 0, 0, 0), s = c(1,1,1,1), mu = c(10, 10, 10, 10))
+##Run fits
+quadmodal.sd <- FitLognormal(date, sd,Dp, TotConc, nmodes, upper, lower)
+##Set fitting parameters - 5 modes
+nmodes = 5
+upper = data.frame(p = c(1, 1, 1, 1, 1), s = c(3,3,3,3,3), mu = c(1000, 1000, 1000, 1000, 1000))
+lower = data.frame(p = c(0, 0, 0, 0, 0), s = c(1,1,1,1,1), mu = c(10, 10, 10, 10, 10))
+##Run fits
+pentmodal.sd <- FitLognormal(date, sd,Dp, TotConc, nmodes, upper, lower)
+##Bind all the fit data together
+AllFits <- rbind(single.sd, bimodal.sd, trimodal.sd, quadmodal.sd, pentmodal.sd)
+##Plot Error
+ggplot(AllFits, aes(x = nmodes, y = BIC))+
+  geom_point()+
+  facet_wrap(~date, ncol = 1)+
+  theme_bw()
+
+```
+I have used the BIC because this metric applies a penalty for each additional lognormal mode fitted, to prevent overfitting.  
+
+The results confirm that three lognormal mode is the most appropriate fit to the data, the BIC is minimisedd when 3 modes are fitted.
